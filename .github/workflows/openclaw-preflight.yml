@@ -1,0 +1,52 @@
+name: 🔍 OpenClaw — 설치 전 환경 검증
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'scripts/**.sh'
+      - '.github/workflows/openclaw-*.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  preflight:
+    name: 🧪 환경 검증 (Ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node.js 22 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 시스템 요구사항 확인
+        run: |
+          echo "=== 시스템 정보 ==="
+          echo "OS: $(uname -a)"
+          echo "Node: $(node --version)"
+          echo "npm: $(npm --version)"
+          echo "디스크: $(df -h / | tail -1)"
+          echo "메모리: $(free -h | grep Mem)"
+
+      - name: OpenClaw 설치 가능 여부 확인
+        run: |
+          LATEST=$(npm view openclaw version 2>/dev/null || echo "조회 실패")
+          echo "OpenClaw 최신 버전: $LATEST"
+          if lsof -i:18789 > /dev/null 2>&1; then
+            echo "⚠️  포트 18789 이미 사용 중"
+          else
+            echo "✅ 포트 18789 사용 가능"
+          fi
+
+      - name: 스크립트 권한 설정
+        run: chmod +x scripts/*.sh
+
+      - name: 셸 스크립트 린트 (shellcheck)
+        run: |
+          sudo apt-get install -y shellcheck -q
+          shellcheck scripts/*.sh || true

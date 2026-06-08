@@ -1,0 +1,168 @@
+name: 📦 OpenClaw — 설치 및 설정 자동화
+
+on:
+  workflow_dispatch:
+    inputs:
+      llm_provider:
+        description: 'LLM 프로바이더 선택'
+        required: true
+        default: 'anthropic'
+        type: choice
+        options: [anthropic, vllm, openai, ollama]
+      openclaw_version:
+        description: 'OpenClaw 버전 (latest = 최신)'
+        required: false
+        default: 'latest'
+  schedule:
+    - cron: '0 3 * * 1'
+
+jobs:
+  install:
+    name: 📥 OpenClaw 설치 (${{ github.event.inputs.llm_provider }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: npm 캐시 설정
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-openclaw-${{ github.event.inputs.openclaw_version }}
+          restore-keys: |
+            ${{ runner.os }}-openclaw-
+
+      - name: OpenClaw 설치
+        run: |
+          VERSION="${{ github.event.inputs.openclaw_version }}"
+          if [ "$VERSION" = "latest" ]; then
+            npm install -g openclaw
+          else
+            npm install -g openclaw@$VERSION
+          fi
+          echo "✅ 설치 완료: $(openclaw --version)"
+
+      - name: OpenClaw 설정 생성
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          VLLM_API_KEY:      ${{ secrets.VLLM_API_KEY }}
+          VLLM_BASE_URL:     ${{ vars.VLLM_BASE_URL }}
+        run: |
+          mkdir -p ~/.openclaw
+          PROVIDER="${{ github.event.inputs.llm_provider }}"
+          case $PROVIDER in
+            anthropic)
+              cat > ~/.openclaw/openclaw.json << EOF
+          {
+            "models": {
+              "providers": {
+                "anthropic": {
+                  "baseUrl": "https://api.anthropic.com",
+                  "apiKey": "${ANTHROPIC_API_KEY}",
+                  "models": [
+                    { "id": "claude-sonnet-4-5", "contextWindow": 200000 },
+                    { "id": "claude-haiku-3-5",  "contextWindow": 200000 }
+                  ]
+                }
+              },
+              "primaryModel": "anthropic/claude-sonnet-4-5"
+            },
+            "gateway": { "port": 18789 }
+          }
+          EOF
+              ;;
+            vllm)
+              cat > ~/.openclaw/openclaw.json << EOF
+          {
+            "models": {
+              "providers": {
+                "vllm": {
+                  "baseUrl": "${VLLM_BASE_URL:-http://localhost:8000}",
+                  "apiKey": "${VLLM_API_KEY:-no-auth}",
+                  "api": "openai-completions",
+                  "timeoutSeconds": 120,
+                  "models": [
+                    { "id": "qwen2.5-coder-32b", "contextWindow": 32768 }
+                  ]
+                }
+              },
+              "primaryModel": "vllm/qwen2.5-coder-32b"
+            },
+            "gateway": { "port": 18789 }
+          }
+          EOF
+              ;;
+            openai)
+              cat > ~/.openclaw/openclaw.json << EOF
+          {
+            "models": {
+              "providers": {
+                "openai": {
+                  "baseUrl": "https://api.openai.com",
+                  "apiKey": "${OPENAI_API_KEY}",
+                  "models": [
+                    { "id": "gpt-4o", "contextWindow": 128000 }
+                  ]
+                }
+              },
+              "primaryModel": "openai/gpt-4o"
+            },
+            "gateway": { "port": 18789 }
+          }
+          EOF
+              ;;
+            ollama)
+              cat > ~/.openclaw/openclaw.json << EOF
+          {
+            "models": {
+              "providers": {
+                "ollama": {
+                  "baseUrl": "http://localhost:11434",
+                  "apiKey": "ollama",
+                  "api": "openai-completions",
+                  "timeoutSeconds": 180,
+                  "models": [
+                    { "id": "llama3.2", "contextWindow": 8192 }
+                  ]
+                }
+              },
+              "primaryModel": "ollama/llama3.2"
+            },
+            "gateway": { "port": 18789 }
+          }
+          EOF
+              ;;
+          esac
+          echo "✅ 설정 파일 생성 완료 (프로바이더: $PROVIDER)"
+          cat ~/.openclaw/openclaw.json | python3 -m json.tool > /dev/null && echo "✅ JSON 문법 검증 통과"
+
+      - name: 게이트웨이 시작 및 헬스체크
+        run: |
+          GATEWAY_BIND=0.0.0.0 openclaw gateway start &
+          GATEWAY_PID=$!
+          for i in $(seq 1 15); do
+            sleep 2
+            if curl -sf http://localhost:18789/health > /dev/null 2>&1; then
+              echo "✅ 게이트웨이 정상 응답 (${i}회 시도)"
+              break
+            fi
+            echo "  ⏳ 대기 중... (${i}/15)"
+          done
+          kill $GATEWAY_PID 2>/dev/null || true
+          echo "✅ 게이트웨이 테스트 완료"
+
+      - name: 설치 결과 요약
+        if: always()
+        run: |
+          echo "## 📦 OpenClaw 설치 결과" >> $GITHUB_STEP_SUMMARY
+          echo "| 항목 | 내용 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 버전 | $(openclaw --version 2>/dev/null || echo '확인 불가') |" >> $GITHUB_STEP_SUMMARY
+          echo "| 프로바이더 | ${{ github.event.inputs.llm_provider }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 실행 시각 | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY

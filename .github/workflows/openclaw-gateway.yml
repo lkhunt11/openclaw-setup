@@ -1,0 +1,56 @@
+name: 💓 OpenClaw — 게이트웨이 헬스체크
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      gateway_url:
+        description: '게이트웨이 URL'
+        required: false
+        default: 'http://localhost:18789'
+
+jobs:
+  healthcheck:
+    name: 💓 헬스체크
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 게이트웨이 응답 확인
+        id: health
+        run: |
+          URL="${{ github.event.inputs.gateway_url || 'http://localhost:18789' }}"
+          echo "대상 URL: $URL"
+          HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" \
+            --connect-timeout 5 --max-time 10 "$URL/health" || echo "000")
+          echo "HTTP 응답 코드: $HTTP_CODE"
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ 게이트웨이 정상"
+            echo "status=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "❌ 게이트웨이 응답 없음 (코드: $HTTP_CODE)"
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 상태 리포트 생성
+        if: always()
+        run: |
+          echo "## 💓 OpenClaw 게이트웨이 상태" >> $GITHUB_STEP_SUMMARY
+          echo "- **상태**: ${{ steps.health.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **HTTP 코드**: ${{ steps.health.outputs.http_code }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **확인 시각**: $(date '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+
+      - name: 장애 알림 (Slack)
+        if: steps.health.outputs.status == 'unhealthy'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: |
+            🚨 *OpenClaw 게이트웨이 다운!*
+            HTTP: `${{ steps.health.outputs.http_code }}`
+            시각: $(date '+%Y-%m-%d %H:%M UTC')
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
