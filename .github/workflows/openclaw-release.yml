@@ -5,6 +5,9 @@ on:
     tags: ['v*.*.*']
   workflow_dispatch:
 
+permissions:
+  contents: write  # GitHub Release 생성에 필요
+
 jobs:
   verify:
     name: 🔍 배포 전 검증

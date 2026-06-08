@@ -16,6 +16,9 @@ on:
   schedule:
     - cron: '0 3 * * 1'
 
+permissions:
+  contents: read
+
 jobs:
   install:
     name: 📥 OpenClaw 설치 (${{ github.event.inputs.llm_provider || 'anthropic' }})

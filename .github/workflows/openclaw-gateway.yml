@@ -18,6 +18,9 @@ on:
           - smoke-test   # GitHub-hosted: 설치 후 로컬 헬스체크
           - external     # 외부 URL 헬스체크 (gateway_url 필수)
 
+permissions:
+  contents: read
+
 jobs:
   # ── 모드 1: 로컬 smoke-test (GitHub-hosted runner) ──────────────────────────
   smoke-test:
@@ -78,8 +81,11 @@ jobs:
     steps:
       - name: 외부 URL 헬스체크
         id: health
+        env:
+          GATEWAY_URL: ${{ github.event.inputs.gateway_url }}
         run: |
-          URL="${{ github.event.inputs.gateway_url }}"
+          # 환경변수로 받아 shell injection 방지
+          URL="$GATEWAY_URL"
           echo "대상 URL: $URL"
           HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" \
             --connect-timeout 5 --max-time 10 "$URL/health" || echo "000")
