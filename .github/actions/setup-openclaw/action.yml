@@ -1,0 +1,40 @@
+name: Setup OpenClaw
+description: Node.js 22 설치 + OpenClaw 설치 (공통 composite action)
+
+inputs:
+  openclaw_version:
+    description: 'OpenClaw 버전 (latest = 최신)'
+    required: false
+    default: 'latest'
+
+outputs:
+  openclaw_version:
+    description: '설치된 OpenClaw 버전'
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'npm'
+
+    - name: npm 캐시
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-openclaw-${{ inputs.openclaw_version }}
+        restore-keys: |
+          ${{ runner.os }}-openclaw-
+
+    - name: OpenClaw 설치
+      id: install
+      shell: bash
+      run: |
+        PKG="openclaw"
+        [ "${{ inputs.openclaw_version }}" != "latest" ] && PKG="openclaw@${{ inputs.openclaw_version }}"
+        npm install -g "$PKG"
+        VER=$(openclaw --version 2>/dev/null || echo "unknown")
+        echo "version=$VER" >> "$GITHUB_OUTPUT"
+        echo "✅ OpenClaw $VER 설치 완료"

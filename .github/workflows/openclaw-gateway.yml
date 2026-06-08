@@ -6,50 +6,112 @@ on:
   workflow_dispatch:
     inputs:
       gateway_url:
-        description: '게이트웨이 URL'
+        description: '외부 게이트웨이 URL (self-hosted runner 또는 원격 서버용)'
         required: false
-        default: 'http://localhost:18789'
+        default: ''
+      run_mode:
+        description: '실행 모드'
+        required: false
+        default: 'smoke-test'
+        type: choice
+        options:
+          - smoke-test   # GitHub-hosted: 설치 후 로컬 헬스체크
+          - external     # 외부 URL 헬스체크 (gateway_url 필수)
 
 jobs:
-  healthcheck:
-    name: 💓 헬스체크
+  # ── 모드 1: 로컬 smoke-test (GitHub-hosted runner) ──────────────────────────
+  smoke-test:
+    name: 💨 Smoke Test (설치 → 헬스체크)
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'smoke-test' ||
+      github.event.inputs.run_mode == ''
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: 게이트웨이 응답 확인
+      - name: OpenClaw 설치
+        uses: ./.github/actions/setup-openclaw
+
+      - name: 게이트웨이 시작
+        run: |
+          GATEWAY_BIND=0.0.0.0 openclaw gateway start &
+          echo "GATEWAY_PID=$!" >> "$GITHUB_ENV"
+
+      - name: 헬스체크
+        uses: ./.github/actions/gateway-healthcheck
+        id: health
+        with:
+          timeout_seconds: '30'
+
+      - name: 게이트웨이 종료
+        if: always()
+        run: kill "$GATEWAY_PID" 2>/dev/null || true
+
+      - name: 상태 요약
+        if: always()
+        run: |
+          echo "## 💓 OpenClaw Smoke Test 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **상태**: ${{ steps.health.outputs.status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **모드**: smoke-test (GitHub-hosted)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **확인 시각**: $(date '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 장애 알림 (Slack)
+        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: |
+            🚨 *OpenClaw Smoke Test 실패!*
+            브랜치: `${{ github.ref_name }}`
+            시각: $(date '+%Y-%m-%d %H:%M UTC')
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ── 모드 2: 외부 URL 헬스체크 (self-hosted runner 또는 원격 서버) ──────────
+  external-check:
+    name: 🌐 외부 게이트웨이 헬스체크
+    runs-on: ubuntu-latest
+    if: github.event.inputs.run_mode == 'external' && github.event.inputs.gateway_url != ''
+
+    steps:
+      - name: 외부 URL 헬스체크
         id: health
         run: |
-          URL="${{ github.event.inputs.gateway_url || 'http://localhost:18789' }}"
+          URL="${{ github.event.inputs.gateway_url }}"
           echo "대상 URL: $URL"
           HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" \
             --connect-timeout 5 --max-time 10 "$URL/health" || echo "000")
           echo "HTTP 응답 코드: $HTTP_CODE"
-          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
           if [ "$HTTP_CODE" = "200" ]; then
+            echo "status=healthy" >> "$GITHUB_OUTPUT"
             echo "✅ 게이트웨이 정상"
-            echo "status=healthy" >> $GITHUB_OUTPUT
           else
+            echo "status=unhealthy" >> "$GITHUB_OUTPUT"
             echo "❌ 게이트웨이 응답 없음 (코드: $HTTP_CODE)"
-            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            exit 1
           fi
 
-      - name: 상태 리포트 생성
+      - name: 상태 요약
         if: always()
         run: |
-          echo "## 💓 OpenClaw 게이트웨이 상태" >> $GITHUB_STEP_SUMMARY
-          echo "- **상태**: ${{ steps.health.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **HTTP 코드**: ${{ steps.health.outputs.http_code }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **확인 시각**: $(date '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "## 💓 외부 게이트웨이 상태" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **URL**: ${{ github.event.inputs.gateway_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **상태**: ${{ steps.health.outputs.status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **HTTP 코드**: ${{ steps.health.outputs.http_code }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **확인 시각**: $(date '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 장애 알림 (Slack)
-        if: steps.health.outputs.status == 'unhealthy'
+        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
         uses: 8398a7/action-slack@v3
         with:
           status: failure
           text: |
             🚨 *OpenClaw 게이트웨이 다운!*
+            URL: `${{ github.event.inputs.gateway_url }}`
             HTTP: `${{ steps.health.outputs.http_code }}`
             시각: $(date '+%Y-%m-%d %H:%M UTC')
         env:
