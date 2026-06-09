@@ -57,9 +57,9 @@ jobs:
             echo "✅ 게이트웨이 응답: HTTP $HTTP"
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "❌ 게이트웨이 응답 없음: HTTP $HTTP"
+            echo "⚠️ 게이트웨이 미응답: HTTP $HTTP (Tailscale VPN — GitHub runner에서 접근 불가 시 정상)"
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            exit 1
+            # GitHub-hosted runner는 Tailscale VPN IP에 접근 불가 → 경고만 출력, 차단 안 함
           fi
 
       - name: 헬스체크 요약
@@ -76,6 +76,7 @@ jobs:
     name: 2️⃣ 채널 연동 상태 확인
     runs-on: ubuntu-latest
     needs: gateway-health
+    if: always()
     outputs:
       channels_ready: ${{ steps.channels.outputs.ready }}
       channel_list: ${{ steps.channels.outputs.list }}
@@ -120,6 +121,7 @@ jobs:
     name: 3️⃣ 테스트 메시지 전송
     runs-on: ubuntu-latest
     needs: [gateway-health, channel-check]
+    if: always()
     outputs:
       send_ok: ${{ steps.send.outputs.ok }}
       http_code: ${{ steps.send.outputs.http_code }}
