@@ -16,36 +16,21 @@ on:
   schedule:
     - cron: '0 3 * * 1'
 
+permissions:
+  contents: read
+
 jobs:
   install:
-    name: 📥 OpenClaw 설치 (${{ github.event.inputs.llm_provider }})
+    name: 📥 OpenClaw 설치 (${{ github.event.inputs.llm_provider || 'anthropic' }})
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: npm 캐시 설정
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-openclaw-${{ github.event.inputs.openclaw_version }}
-          restore-keys: |
-            ${{ runner.os }}-openclaw-
-
       - name: OpenClaw 설치
-        run: |
-          VERSION="${{ github.event.inputs.openclaw_version }}"
-          if [ "$VERSION" = "latest" ]; then
-            npm install -g openclaw
-          else
-            npm install -g openclaw@$VERSION
-          fi
-          echo "✅ 설치 완료: $(openclaw --version)"
+        uses: ./.github/actions/setup-openclaw
+        with:
+          openclaw_version: ${{ github.event.inputs.openclaw_version || 'latest' }}
 
       - name: OpenClaw 설정 생성
         env:
@@ -55,7 +40,8 @@ jobs:
           VLLM_BASE_URL:     ${{ vars.VLLM_BASE_URL }}
         run: |
           mkdir -p ~/.openclaw
-          PROVIDER="${{ github.event.inputs.llm_provider }}"
+          PROVIDER="${{ github.event.inputs.llm_provider || 'anthropic' }}"
+
           case $PROVIDER in
             anthropic)
               cat > ~/.openclaw/openclaw.json << EOF
@@ -139,30 +125,31 @@ jobs:
           EOF
               ;;
           esac
-          echo "✅ 설정 파일 생성 완료 (프로바이더: $PROVIDER)"
-          cat ~/.openclaw/openclaw.json | python3 -m json.tool > /dev/null && echo "✅ JSON 문법 검증 통과"
 
-      - name: 게이트웨이 시작 및 헬스체크
+          python3 -m json.tool ~/.openclaw/openclaw.json > /dev/null \
+            && echo "✅ JSON 문법 검증 통과 (프로바이더: $PROVIDER)" \
+            || { echo "❌ JSON 문법 오류"; exit 1; }
+
+      - name: 게이트웨이 시작
         run: |
           GATEWAY_BIND=0.0.0.0 openclaw gateway start &
-          GATEWAY_PID=$!
-          for i in $(seq 1 15); do
-            sleep 2
-            if curl -sf http://localhost:18789/health > /dev/null 2>&1; then
-              echo "✅ 게이트웨이 정상 응답 (${i}회 시도)"
-              break
-            fi
-            echo "  ⏳ 대기 중... (${i}/15)"
-          done
-          kill $GATEWAY_PID 2>/dev/null || true
-          echo "✅ 게이트웨이 테스트 완료"
+          echo "GATEWAY_PID=$!" >> "$GITHUB_ENV"
+
+      - name: 게이트웨이 헬스체크
+        uses: ./.github/actions/gateway-healthcheck
+        with:
+          timeout_seconds: '30'
+
+      - name: 게이트웨이 종료
+        if: always()
+        run: kill "$GATEWAY_PID" 2>/dev/null || true
 
       - name: 설치 결과 요약
         if: always()
         run: |
-          echo "## 📦 OpenClaw 설치 결과" >> $GITHUB_STEP_SUMMARY
-          echo "| 항목 | 내용 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 버전 | $(openclaw --version 2>/dev/null || echo '확인 불가') |" >> $GITHUB_STEP_SUMMARY
-          echo "| 프로바이더 | ${{ github.event.inputs.llm_provider }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 실행 시각 | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 OpenClaw 설치 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 항목 | 내용 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 버전 | $(openclaw --version 2>/dev/null || echo '확인 불가') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 프로바이더 | ${{ github.event.inputs.llm_provider || 'anthropic' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 실행 시각 | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> "$GITHUB_STEP_SUMMARY"

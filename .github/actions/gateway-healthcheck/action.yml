@@ -1,0 +1,49 @@
+name: Gateway Healthcheck
+description: OpenClaw 게이트웨이 시작 후 헬스체크 (retry 포함)
+
+inputs:
+  timeout_seconds:
+    description: '최대 대기 시간(초)'
+    required: false
+    default: '30'
+  port:
+    description: '게이트웨이 포트'
+    required: false
+    default: '18789'
+
+outputs:
+  status:
+    description: 'healthy | unhealthy'
+    value: ${{ steps.check.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: 게이트웨이 헬스체크
+      id: check
+      shell: bash
+      run: |
+        PORT="${{ inputs.port }}"
+        TIMEOUT="${{ inputs.timeout_seconds }}"
+        URL="http://localhost:${PORT}/health"
+        ELAPSED=0
+        STATUS="unhealthy"
+
+        echo "⏳ 게이트웨이 응답 대기 (최대 ${TIMEOUT}초)..."
+        while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+          if curl -sf --connect-timeout 2 --max-time 3 "$URL" > /dev/null 2>&1; then
+            echo "✅ 게이트웨이 정상 응답 (${ELAPSED}초 경과)"
+            STATUS="healthy"
+            break
+          fi
+          sleep 2
+          ELAPSED=$((ELAPSED + 2))
+          echo "  ⏳ 대기 중... (${ELAPSED}/${TIMEOUT}초)"
+        done
+
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+        if [ "$STATUS" = "unhealthy" ]; then
+          echo "❌ 게이트웨이가 ${TIMEOUT}초 내에 응답하지 않았습니다."
+          exit 1
+        fi
