@@ -61,7 +61,7 @@ jobs:
         run: kill "$GATEWAY_PID" 2>/dev/null || true
 
       - name: Slack 알림
-        if: always() && secrets.SLACK_WEBHOOK_URL != ''
+        if: always()
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}
@@ -112,7 +112,7 @@ jobs:
             core.setOutput('release_url', data.html_url);
 
       - name: Slack 알림
-        if: always() && secrets.SLACK_WEBHOOK_URL != ''
+        if: always()
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}

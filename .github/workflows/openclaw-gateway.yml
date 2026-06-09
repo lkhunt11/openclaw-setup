@@ -61,7 +61,7 @@ jobs:
           echo "- **확인 시각**: $(date '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 장애 알림 (Slack)
-        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        if: failure()
         uses: 8398a7/action-slack@v3
         with:
           status: failure
@@ -111,7 +111,7 @@ jobs:
           echo "- **확인 시각**: $(date '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 장애 알림 (Slack)
-        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        if: failure()
         uses: 8398a7/action-slack@v3
         with:
           status: failure
