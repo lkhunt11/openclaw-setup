@@ -1,0 +1,167 @@
+name: 📣 OpenClaw — CI 결과 채널 알림
+
+on:
+  workflow_run:
+    workflows:
+      - "🔍 OpenClaw — 설치 전 환경 검증"
+      - "📦 OpenClaw — 설치 및 설정 자동화"
+      - "💓 OpenClaw — 게이트웨이 헬스체크"
+      - "🚀 OpenClaw — 릴리스 배포"
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      message:
+        description: '직접 전송할 메시지'
+        required: true
+        default: '🔔 OpenClaw 수동 알림 테스트'
+      channel:
+        description: '대상 채널 (설정된 채널 이름)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  # ── CI 결과 알림 ────────────────────────────────────────────────────────────
+  notify-ci-result:
+    name: 📣 CI 결과 알림
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+
+    steps:
+      - name: 알림 메시지 생성
+        id: msg
+        run: |
+          WF_NAME="${{ github.event.workflow_run.name }}"
+          WF_STATUS="${{ github.event.workflow_run.conclusion }}"
+          WF_URL="${{ github.event.workflow_run.html_url }}"
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          COMMIT="${{ github.event.workflow_run.head_sha }}"
+          SHORT_SHA="${COMMIT:0:7}"
+
+          if [ "$WF_STATUS" = "success" ]; then
+            ICON="✅"
+          elif [ "$WF_STATUS" = "failure" ]; then
+            ICON="❌"
+          elif [ "$WF_STATUS" = "cancelled" ]; then
+            ICON="⚠️"
+          else
+            ICON="🔄"
+          fi
+
+          MESSAGE="${ICON} *${WF_NAME}* \`${WF_STATUS}\`
+브랜치: \`${BRANCH}\` · 커밋: \`${SHORT_SHA}\`
+🔗 [결과 보기](${WF_URL})"
+
+          echo "message<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$MESSAGE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "status=$WF_STATUS" >> "$GITHUB_OUTPUT"
+          echo "icon=$ICON" >> "$GITHUB_OUTPUT"
+
+      - name: OpenClaw 채널 알림 전송
+        env:
+          OPENCLAW_GATEWAY_URL: ${{ vars.OPENCLAW_GATEWAY_URL }}
+          OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+          OPENCLAW_CHANNEL_TARGET: ${{ vars.OPENCLAW_CHANNEL_TARGET }}
+        run: |
+          if [ -z "$OPENCLAW_GATEWAY_URL" ] || [ -z "$OPENCLAW_GATEWAY_TOKEN" ]; then
+            echo "⏭ OPENCLAW_GATEWAY_URL 또는 OPENCLAW_GATEWAY_TOKEN 미설정 — 알림 스킵"
+            exit 0
+          fi
+
+          MESSAGE='${{ steps.msg.outputs.message }}'
+          TARGET="${OPENCLAW_CHANNEL_TARGET:-}"
+
+          PAYLOAD=$(python3 -c "
+          import json, sys
+          msg = sys.argv[1]
+          target = sys.argv[2]
+          data = {'message': msg}
+          if target:
+              data['target'] = target
+          print(json.dumps(data))
+          " "$MESSAGE" "$TARGET")
+
+          HTTP_CODE=$(curl -s -o /tmp/notify_response.txt -w "%{http_code}" \
+            -X POST "${OPENCLAW_GATEWAY_URL}/api/message/send" \
+            -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          echo "응답 코드: $HTTP_CODE"
+          cat /tmp/notify_response.txt
+
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+            echo "✅ OpenClaw 채널 알림 전송 완료"
+          else
+            echo "⚠️ 알림 전송 실패 (HTTP $HTTP_CODE) — CI는 계속 진행"
+          fi
+
+      - name: Slack 알림 (폴백)
+        if: >-
+          steps.msg.outputs.status == 'failure' &&
+          secrets.SLACK_WEBHOOK_URL != ''
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: |
+            ${{ steps.msg.outputs.icon }} *${{ github.event.workflow_run.name }}* 실패
+            브랜치: `${{ github.event.workflow_run.head_branch }}`
+            ${{ github.event.workflow_run.html_url }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: 알림 결과 요약
+        if: always()
+        run: |
+          echo "## 📣 CI 알림 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 항목 | 내용 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 워크플로우 | ${{ github.event.workflow_run.name }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 결과 | ${{ steps.msg.outputs.icon }} ${{ github.event.workflow_run.conclusion }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 브랜치 | ${{ github.event.workflow_run.head_branch }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 시각 | $(date '+%Y-%m-%d %H:%M UTC') |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 수동 메시지 전송 ────────────────────────────────────────────────────────
+  manual-notify:
+    name: 📨 수동 메시지 전송
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: OpenClaw 채널 메시지 전송
+        env:
+          OPENCLAW_GATEWAY_URL: ${{ vars.OPENCLAW_GATEWAY_URL }}
+          OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+          OPENCLAW_CHANNEL_TARGET: ${{ github.event.inputs.channel || vars.OPENCLAW_CHANNEL_TARGET }}
+        run: |
+          if [ -z "$OPENCLAW_GATEWAY_URL" ] || [ -z "$OPENCLAW_GATEWAY_TOKEN" ]; then
+            echo "❌ OPENCLAW_GATEWAY_URL 또는 OPENCLAW_GATEWAY_TOKEN 미설정"
+            exit 1
+          fi
+
+          MESSAGE="${{ github.event.inputs.message }}"
+          TARGET="${OPENCLAW_CHANNEL_TARGET:-}"
+
+          PAYLOAD=$(python3 -c "
+          import json, sys
+          msg = sys.argv[1]
+          target = sys.argv[2]
+          data = {'message': msg}
+          if target:
+              data['target'] = target
+          print(json.dumps(data))
+          " "$MESSAGE" "$TARGET")
+
+          HTTP_CODE=$(curl -s -o /tmp/notify_response.txt -w "%{http_code}" \
+            -X POST "${OPENCLAW_GATEWAY_URL}/api/message/send" \
+            -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          cat /tmp/notify_response.txt
+          [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] \
+            && echo "✅ 메시지 전송 완료" \
+            || { echo "❌ 전송 실패 (HTTP $HTTP_CODE)"; exit 1; }
