@@ -1,4 +1,4 @@
-name: 🧪 OpenClaw — 채널 알림 E2E 테스트
+name: 🧪 OpenClaw — E2E 채널 알림 테스트
 
 on:
   workflow_dispatch:
