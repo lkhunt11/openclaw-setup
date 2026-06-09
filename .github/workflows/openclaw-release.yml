@@ -5,6 +5,9 @@ on:
     tags: ['v*.*.*']
   workflow_dispatch:
 
+permissions:
+  contents: write  # GitHub Release 생성에 필요
+
 jobs:
   verify:
     name: 🔍 배포 전 검증
@@ -14,21 +17,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: 버전 추출
         id: ver
         run: |
-          VER=${GITHUB_REF_NAME:-$(date +%Y.%-m.0)}
-          echo "version=$VER" >> $GITHUB_OUTPUT
+          VER="${GITHUB_REF_NAME:-$(date +%Y.%-m.0)}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "배포 버전: $VER"
 
-      - name: 스크립트 검증
+      - name: 스크립트 린트 (shellcheck)
         run: |
           sudo apt-get install -y shellcheck -q
-          find scripts/ -name "*.sh" -exec shellcheck {} \; && echo "✅ 스크립트 린트 통과"
+          find scripts/ -name "*.sh" -exec shellcheck --severity=warning {} \;
+          echo "✅ 스크립트 린트 통과"
 
   staging:
     name: 🧪 스테이징 검증
@@ -38,21 +39,26 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
-      - name: OpenClaw 설치 및 게이트웨이 테스트
+      - name: OpenClaw 설치
+        uses: ./.github/actions/setup-openclaw
+        id: openclaw
+
+      - name: 게이트웨이 시작
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          npm install -g openclaw
-          echo "✅ 설치: $(openclaw --version)"
           GATEWAY_BIND=0.0.0.0 openclaw gateway start &
-          sleep 8
-          HEALTH=$(curl -sf http://localhost:18789/health && echo "OK" || echo "FAIL")
-          echo "게이트웨이 상태: $HEALTH"
-          [ "$HEALTH" = "OK" ] && echo "✅ 스테이징 통과" || exit 1
+          echo "GATEWAY_PID=$!" >> "$GITHUB_ENV"
+
+      - name: 게이트웨이 헬스체크
+        uses: ./.github/actions/gateway-healthcheck
+        with:
+          timeout_seconds: '30'
+
+      - name: 게이트웨이 종료
+        if: always()
+        run: kill "$GATEWAY_PID" 2>/dev/null || true
 
       - name: Slack 알림
         if: always()
@@ -62,6 +68,7 @@ jobs:
           text: |
             🧪 *OpenClaw 스테이징* `${{ job.status }}`
             버전: `${{ needs.verify.outputs.version }}`
+            OpenClaw: `${{ steps.openclaw.outputs.openclaw_version }}`
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
@@ -86,11 +93,23 @@ jobs:
               repo:  context.repo.repo,
               tag_name: version,
               name: `OpenClaw Setup ${version}`,
-              body: `## 🦞 OpenClaw Windows/WSL2 자동 설치 ${version}\n\n### 빠른 설치\n\`\`\`bash\nnpm install -g openclaw\nGATEWAY_BIND=0.0.0.0 openclaw gateway start\n\`\`\``,
+              body: [
+                `## 🦞 OpenClaw Windows/WSL2 자동 설치 ${version}`,
+                '',
+                '### 빠른 설치',
+                '```bash',
+                'npm install -g openclaw',
+                'GATEWAY_BIND=0.0.0.0 openclaw gateway start',
+                '```',
+                '',
+                '### 변경사항',
+                '자세한 내용은 [CHANGELOG](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/commits/' + version + ')를 참고하세요.',
+              ].join('\n'),
               draft: false,
-              prerelease: false
+              prerelease: version.includes('-'),
             });
             console.log('✅ Release: ' + data.html_url);
+            core.setOutput('release_url', data.html_url);
 
       - name: Slack 알림
         if: always()

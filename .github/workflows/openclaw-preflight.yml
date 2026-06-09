@@ -5,10 +5,18 @@ on:
     branches: [main, develop]
     paths:
       - 'scripts/**.sh'
+      - 'tests/**.bats'
       - '.github/workflows/openclaw-*.yml'
+      - '.github/actions/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   preflight:
@@ -18,22 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Node.js 22 설정
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
       - name: 시스템 요구사항 확인
         run: |
           echo "=== 시스템 정보 ==="
           echo "OS: $(uname -a)"
-          echo "Node: $(node --version)"
-          echo "npm: $(npm --version)"
           echo "디스크: $(df -h / | tail -1)"
           echo "메모리: $(free -h | grep Mem)"
 
-      - name: OpenClaw 설치 가능 여부 확인
+      - name: OpenClaw 최신 버전 조회
         run: |
           LATEST=$(npm view openclaw version 2>/dev/null || echo "조회 실패")
           echo "OpenClaw 최신 버전: $LATEST"
@@ -43,10 +43,38 @@ jobs:
             echo "✅ 포트 18789 사용 가능"
           fi
 
-      - name: 스크립트 권한 설정
+      - name: 스크립트 실행 권한 설정
         run: chmod +x scripts/*.sh
 
       - name: 셸 스크립트 린트 (shellcheck)
         run: |
           sudo apt-get install -y shellcheck -q
-          shellcheck scripts/*.sh || true
+          echo "=== shellcheck 결과 ==="
+          shellcheck --severity=warning scripts/*.sh
+          echo "✅ 셸 스크립트 린트 통과"
+
+      - name: bats 테스트 프레임워크 설치
+        run: |
+          sudo apt-get install -y bats -q
+          echo "bats 버전: $(bats --version)"
+
+      - name: 단위 테스트 실행 (bats)
+        run: |
+          echo "=== 🧪 bats 단위 테스트 ==="
+          bats tests/ --tap
+          echo "✅ 전체 단위 테스트 통과"
+
+      - name: Node.js 22 + OpenClaw 설치 검증
+        uses: ./.github/actions/setup-openclaw
+        id: openclaw
+
+      - name: 설치 결과 요약
+        if: always()
+        run: |
+          echo "## 🔍 환경 검증 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 항목 | 내용 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Node.js | $(node --version) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| npm | $(npm --version) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OpenClaw | ${{ steps.openclaw.outputs.openclaw_version }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 확인 시각 | $(date '+%Y-%m-%d %H:%M UTC') |" >> "$GITHUB_STEP_SUMMARY"

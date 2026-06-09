@@ -1,0 +1,47 @@
+name: Setup OpenClaw
+description: Node.js 22 설치 + OpenClaw 설치 (공통 composite action)
+
+inputs:
+  openclaw_version:
+    description: 'OpenClaw 버전 (latest = 최신)'
+    required: false
+    default: 'latest'
+
+outputs:
+  openclaw_version:
+    description: '설치된 OpenClaw 버전'
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: npm 캐시
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-openclaw-${{ inputs.openclaw_version }}
+        restore-keys: |
+          ${{ runner.os }}-openclaw-
+
+    - name: OpenClaw 설치
+      id: install
+      shell: bash
+      env:
+        OPENCLAW_VERSION: ${{ inputs.openclaw_version }}
+      run: |
+        # 버전 형식 검증 (숫자.숫자.숫자 또는 latest만 허용)
+        if [ "$OPENCLAW_VERSION" != "latest" ] && \
+           ! echo "$OPENCLAW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9._-]+)?$'; then
+          echo "❌ 유효하지 않은 버전 형식: $OPENCLAW_VERSION"
+          exit 1
+        fi
+        PKG="openclaw"
+        [ "$OPENCLAW_VERSION" != "latest" ] && PKG="openclaw@${OPENCLAW_VERSION}"
+        npm install -g "$PKG"
+        VER=$(openclaw --version 2>/dev/null || echo "unknown")
+        echo "version=$VER" >> "$GITHUB_OUTPUT"
+        echo "✅ OpenClaw $VER 설치 완료"
