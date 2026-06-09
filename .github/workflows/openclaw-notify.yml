@@ -1,0 +1,83 @@
+name: 🔔 OpenClaw — CI 결과 채널 알림
+
+on:
+  workflow_run:
+    workflows:
+      - "🔍 OpenClaw — 설치 전 환경 검증"
+      - "📦 OpenClaw — 자동 설치"
+      - "💓 OpenClaw — 게이트웨이 헬스체크"
+      - "🚀 OpenClaw — 릴리스 배포"
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      message:
+        description: '수동 전송 메시지'
+        required: false
+        default: '수동 테스트 알림입니다.'
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: 📣 채널 알림 전송
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: CI 결과 메시지 구성
+        id: msg
+        env:
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          WF_STATUS: ${{ github.event.workflow_run.conclusion }}
+          WF_URL: ${{ github.event.workflow_run.html_url }}
+          MANUAL_MSG: ${{ github.event.inputs.message }}
+        run: |
+          if [ -n "$MANUAL_MSG" ]; then
+            echo "text=$MANUAL_MSG" >> "$GITHUB_OUTPUT"
+          else
+            ICON="✅"
+            [ "$WF_STATUS" != "success" ] && ICON="❌"
+            echo "text=${ICON} [${WF_NAME}] ${WF_STATUS} — ${WF_URL}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: OpenClaw 채널로 전송
+        id: openclaw_send
+        if: ${{ env.OPENCLAW_GATEWAY_URL != '' }}
+        env:
+          OPENCLAW_GATEWAY_URL: ${{ vars.OPENCLAW_GATEWAY_URL }}
+          OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+          OPENCLAW_CHANNEL_TARGET: ${{ vars.OPENCLAW_CHANNEL_TARGET }}
+          MSG: ${{ steps.msg.outputs.text }}
+        run: |
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${OPENCLAW_GATEWAY_URL}/api/message/send" \
+            -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"channel\":\"${OPENCLAW_CHANNEL_TARGET:-default}\",\"text\":\"${MSG}\"}" \
+            --connect-timeout 5 --max-time 10 || echo "000")
+          echo "http_code=$HTTP" >> "$GITHUB_OUTPUT"
+          [ "$HTTP" = "200" ] && echo "✅ OpenClaw 전송 성공" || echo "⚠️ OpenClaw 전송 실패 (HTTP $HTTP)"
+
+      - name: Slack 폴백 (OpenClaw 실패 시)
+        if: ${{ steps.openclaw_send.outputs.http_code != '200' && env.SLACK_WEBHOOK_URL != '' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          MSG: ${{ steps.msg.outputs.text }}
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"${MSG}\"}"
+          echo "✅ Slack 폴백 전송 완료"
+
+      - name: 알림 결과 요약
+        if: always()
+        env:
+          MSG: ${{ steps.msg.outputs.text }}
+          OC_CODE: ${{ steps.openclaw_send.outputs.http_code }}
+        run: |
+          echo "## 🔔 알림 전송 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 항목 | 내용 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 메시지 | $MSG |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| OpenClaw HTTP | ${OC_CODE:-미실행} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 전송 시각 | $(date '+%Y-%m-%d %H:%M UTC') |" >> "$GITHUB_STEP_SUMMARY"
