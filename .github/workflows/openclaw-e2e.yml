@@ -1,6 +1,8 @@
 name: 🧪 OpenClaw — E2E 채널 알림 테스트
 
 on:
+  push:
+    branches: ['_never_auto_trigger']
   workflow_dispatch:
     inputs:
       test_message:
