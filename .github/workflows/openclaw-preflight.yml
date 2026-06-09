@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
     paths:
       - 'scripts/**.sh'
+      - 'tests/**.bats'
       - '.github/workflows/openclaw-*.yml'
       - '.github/actions/**'
   pull_request:
@@ -51,6 +52,17 @@ jobs:
           echo "=== shellcheck 결과 ==="
           shellcheck --severity=warning scripts/*.sh
           echo "✅ 셸 스크립트 린트 통과"
+
+      - name: bats 테스트 프레임워크 설치
+        run: |
+          sudo apt-get install -y bats -q
+          echo "bats 버전: $(bats --version)"
+
+      - name: 단위 테스트 실행 (bats)
+        run: |
+          echo "=== 🧪 bats 단위 테스트 ==="
+          bats tests/ --tap
+          echo "✅ 전체 단위 테스트 통과"
 
       - name: Node.js 22 + OpenClaw 설치 검증
         uses: ./.github/actions/setup-openclaw
