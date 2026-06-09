@@ -1,0 +1,223 @@
+name: 🧪 OpenClaw — E2E 채널 알림 테스트
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/openclaw-e2e.yml']
+  workflow_dispatch:
+    inputs:
+      test_message:
+        description: '테스트 메시지 내용'
+        required: false
+        default: '🧪 OpenClaw E2E 테스트 메시지입니다.'
+      channel_target:
+        description: '대상 채널 (비워두면 기본 채널 사용)'
+        required: false
+        default: ''
+  schedule:
+    # 매일 오전 9시 KST (00:00 UTC) 자동 E2E 검증
+    - cron: '0 0 * * *'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── 1단계: 게이트웨이 헬스체크 ──────────────────────────────────────────────
+  gateway-health:
+    name: 1️⃣ 게이트웨이 헬스체크
+    runs-on: ubuntu-latest
+    outputs:
+      gateway_ok: ${{ steps.health.outputs.ok }}
+      gateway_url: ${{ steps.health.outputs.url }}
+
+    steps:
+      - name: 외부 게이트웨이 응답 확인
+        id: health
+        env:
+          GATEWAY_URL: ${{ vars.OPENCLAW_GATEWAY_URL }}
+          GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+        run: |
+          if [ -z "$GATEWAY_URL" ]; then
+            echo "❌ OPENCLAW_GATEWAY_URL 미설정"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          HTTP=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GATEWAY_TOKEN" \
+            --connect-timeout 5 --max-time 10 \
+            "$GATEWAY_URL/" || echo "000")
+
+          echo "url=$GATEWAY_URL" >> "$GITHUB_OUTPUT"
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "401" ]; then
+            echo "✅ 게이트웨이 응답: HTTP $HTTP"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "⚠️ 게이트웨이 미응답: HTTP $HTTP (Tailscale VPN — GitHub runner에서 접근 불가 시 정상)"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            # GitHub-hosted runner는 Tailscale VPN IP에 접근 불가 → 경고만 출력, 차단 안 함
+          fi
+
+      - name: 헬스체크 요약
+        if: always()
+        run: |
+          echo "## 1️⃣ 게이트웨이 헬스체크" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 항목 | 값 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| URL | ${{ vars.OPENCLAW_GATEWAY_URL }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 상태 | ${{ steps.health.outputs.ok == 'true' && '✅ 정상' || '❌ 오류' }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 2단계: 채널 목록 확인 ────────────────────────────────────────────────────
+  channel-check:
+    name: 2️⃣ 채널 연동 상태 확인
+    runs-on: ubuntu-latest
+    needs: gateway-health
+    if: always()
+    outputs:
+      channels_ready: ${{ steps.channels.outputs.ready }}
+      channel_list: ${{ steps.channels.outputs.list }}
+
+    steps:
+      - name: 등록된 채널 조회
+        id: channels
+        env:
+          GATEWAY_URL: ${{ vars.OPENCLAW_GATEWAY_URL }}
+          GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+        run: |
+          RESPONSE=$(curl -sf \
+            -H "Authorization: Bearer $GATEWAY_TOKEN" \
+            --connect-timeout 5 --max-time 10 \
+            "$GATEWAY_URL/api/channels" 2>&1 || echo '{"error":"연결 실패"}')
+
+          echo "응답: $RESPONSE"
+
+          # 채널 목록 추출 (JSON 배열이 비어있지 않으면 ready)
+          if echo "$RESPONSE" | grep -q '"id"'; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            NAMES=$(echo "$RESPONSE" | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | tr '\n' ', ')
+            echo "list=${NAMES:-채널 등록됨}" >> "$GITHUB_OUTPUT"
+            echo "✅ 채널 연동 확인됨: $NAMES"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "list=없음" >> "$GITHUB_OUTPUT"
+            echo "⚠️ 등록된 채널 없음 (채널 연동 필요)"
+          fi
+
+      - name: 채널 상태 요약
+        if: always()
+        run: |
+          echo "## 2️⃣ 채널 연동 상태" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 항목 | 값 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 채널 준비 | ${{ steps.channels.outputs.ready == 'true' && '✅ 연동됨' || '⚠️ 미연동' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 채널 목록 | ${{ steps.channels.outputs.list }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 3단계: 메시지 전송 E2E ───────────────────────────────────────────────────
+  send-test-message:
+    name: 3️⃣ 테스트 메시지 전송
+    runs-on: ubuntu-latest
+    needs: [gateway-health, channel-check]
+    if: always()
+    outputs:
+      send_ok: ${{ steps.send.outputs.ok }}
+      http_code: ${{ steps.send.outputs.http_code }}
+
+    steps:
+      - name: 테스트 메시지 전송
+        id: send
+        env:
+          GATEWAY_URL: ${{ vars.OPENCLAW_GATEWAY_URL }}
+          GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+          CHANNEL_TARGET: ${{ github.event.inputs.channel_target || vars.OPENCLAW_CHANNEL_TARGET }}
+          TEST_MSG: ${{ github.event.inputs.test_message || '🧪 OpenClaw E2E 자동 테스트 — 정상 동작 확인' }}
+        run: |
+          PAYLOAD=$(python3 -c "
+          import json, sys, os
+          msg = os.environ.get('TEST_MSG', '')
+          target = os.environ.get('CHANNEL_TARGET', '')
+          data = {'text': msg}
+          if target:
+              data['channel'] = target
+          print(json.dumps(data))
+          ")
+
+          echo "전송 페이로드: $PAYLOAD"
+
+          HTTP=$(curl -sf -o /tmp/e2e_response.json -w "%{http_code}" \
+            -X POST "$GATEWAY_URL/api/message/send" \
+            -H "Authorization: Bearer $GATEWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            --connect-timeout 5 --max-time 15 || echo "000")
+
+          echo "http_code=$HTTP" >> "$GITHUB_OUTPUT"
+          echo "HTTP 응답: $HTTP"
+          cat /tmp/e2e_response.json 2>/dev/null || echo "(응답 없음)"
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 메시지 전송 성공"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "❌ 메시지 전송 실패 (HTTP $HTTP)"
+            # 채널 미연동 시 경고만 (실패 처리 안 함)
+            [ "${{ needs.channel-check.outputs.channels_ready }}" = "false" ] && exit 0
+            exit 1
+          fi
+
+      - name: 전송 결과 요약
+        if: always()
+        run: |
+          echo "## 3️⃣ E2E 메시지 전송 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 항목 | 값 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| HTTP 코드 | ${{ steps.send.outputs.http_code }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 전송 결과 | ${{ steps.send.outputs.ok == 'true' && '✅ 성공' || '❌ 실패' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 채널 | ${{ github.event.inputs.channel_target || vars.OPENCLAW_CHANNEL_TARGET || 'default' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 메시지 | ${{ github.event.inputs.test_message || 'E2E 자동 테스트' }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 4단계: 최종 E2E 리포트 ──────────────────────────────────────────────────
+  e2e-report:
+    name: 4️⃣ E2E 최종 리포트
+    runs-on: ubuntu-latest
+    needs: [gateway-health, channel-check, send-test-message]
+    if: always()
+
+    steps:
+      - name: E2E 종합 결과 출력
+        env:
+          GW_OK: ${{ needs.gateway-health.outputs.gateway_ok }}
+          CH_READY: ${{ needs.channel-check.outputs.channels_ready }}
+          SEND_OK: ${{ needs.send-test-message.outputs.send_ok }}
+          HTTP: ${{ needs.send-test-message.outputs.http_code }}
+        run: |
+          echo "================================================"
+          echo "  🧪 OpenClaw E2E 테스트 종합 결과"
+          echo "================================================"
+          echo ""
+          [ "$GW_OK"    = "true"  ] && echo "  ✅ 게이트웨이 헬스체크 — 정상" || echo "  ❌ 게이트웨이 헬스체크 — 실패"
+          [ "$CH_READY" = "true"  ] && echo "  ✅ 채널 연동 상태 — 연동됨"    || echo "  ⚠️  채널 연동 상태 — 미연동"
+          [ "$SEND_OK"  = "true"  ] && echo "  ✅ 메시지 전송 — 성공 (HTTP $HTTP)" || echo "  ❌ 메시지 전송 — 실패 (HTTP $HTTP)"
+          echo ""
+          echo "  채널 목록: ${{ needs.channel-check.outputs.channel_list }}"
+          echo "  게이트웨이: ${{ vars.OPENCLAW_GATEWAY_URL }}"
+          echo "================================================"
+
+      - name: 최종 리포트 요약
+        if: always()
+        run: |
+          echo "## 🧪 OpenClaw E2E 테스트 종합 결과" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 단계 | 결과 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 1️⃣ 게이트웨이 헬스체크 | ${{ needs.gateway-health.outputs.gateway_ok == 'true' && '✅ 정상' || '❌ 실패' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 2️⃣ 채널 연동 상태 | ${{ needs.channel-check.outputs.channels_ready == 'true' && '✅ 연동됨' || '⚠️ 미연동' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 3️⃣ 메시지 전송 | ${{ needs.send-test-message.outputs.send_ok == 'true' && '✅ 성공' || '❌ 실패' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**게이트웨이:** \`${{ vars.OPENCLAW_GATEWAY_URL }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**채널:** \`${{ needs.channel-check.outputs.channel_list }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**실행 시각:** $(date '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_STEP_SUMMARY"
